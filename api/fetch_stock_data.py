@@ -1,20 +1,20 @@
-from http.server import BaseHTTPRequestHandler
 import os
 import requests
-from supabase import create_client, Client
 import json
+from supabase import create_client
+from http.server import BaseHTTPRequestHandler
 
-def fetch_and_insert_data(symbol, market, table_name, supabase, api_key):
-    # Fetch historical data from Alpha Vantage
+def fetch_stock_data(symbol, api_key):
     url = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&apikey={api_key}"
     response = requests.get(url)
-    data = response.json()
+    return response.json()
 
-    # Parse and insert data into the appropriate table
+def parse_stock_data(data, symbol):
     time_series = data.get("Time Series (Daily)", {})
-    results = []
+    parsed_data = []
+    
     for date, values in time_series.items():
-        result = supabase.table(table_name).insert({
+        parsed_data.append({
             "symbol": symbol,
             "date": date,
             "open": float(values["1. open"]),
@@ -22,54 +22,69 @@ def fetch_and_insert_data(symbol, market, table_name, supabase, api_key):
             "low": float(values["3. low"]),
             "close": float(values["4. close"]),
             "volume": int(values["5. volume"])
-        }).execute()
-        results.append(result)
-    return results
+        })
+    
+    return parsed_data
+
+def insert_stock_data(data_list, table_name, supabase):
+    for data in data_list:
+        supabase.table(table_name).insert(data).execute()
+
+def fetch_and_store(symbol, market, table_name, supabase, api_key):
+    raw_data = fetch_stock_data(symbol, api_key)
+    parsed_data = parse_stock_data(raw_data, symbol)
+    insert_stock_data(parsed_data, table_name, supabase)
+    return len(parsed_data)
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         # Load environment variables
-        supabase_url = os.getenv("SUPABASE_URL")
-        supabase_key = os.getenv("SUPABASE_KEY")
-        alpha_vantage_api_key = os.getenv("ALPHA_VANTAGE_API_KEY")
+        supabase_url = os.environ.get("SUPABASE_URL")
+        supabase_key = os.environ.get("SUPABASE_KEY")
+        alpha_vantage_api_key = os.environ.get("ALPHA_VANTAGE_API_KEY")
         
         # Check if environment variables are set
         if not all([supabase_url, supabase_key, alpha_vantage_api_key]):
             self.send_response(500)
             self.send_header('Content-type', 'application/json')
             self.end_headers()
-            self.wfile.write(json.dumps({
+            response_data = {
                 "error": "Environment variables not properly configured"
-            }).encode())
+            }
+            self.wfile.write(json.dumps(response_data).encode())
             return
-
+        
         try:
             # Initialize Supabase client
             supabase = create_client(supabase_url, supabase_key)
             
-            # Fetch and insert data for each stock
-            fetch_and_insert_data("AAPL", "NASDAQ", "nasdaq_historical_prices", supabase, alpha_vantage_api_key)
-            fetch_and_insert_data("MSFT", "NASDAQ", "nasdaq_historical_prices", supabase, alpha_vantage_api_key)
-            fetch_and_insert_data("IBM", "NYSE", "nyse_historical_prices", supabase, alpha_vantage_api_key)
-            fetch_and_insert_data("TSCO.L", "LSE", "lse_historical_prices", supabase, alpha_vantage_api_key)
+            # Fetch and store data for each stock
+            results = {
+                "AAPL": fetch_and_store("AAPL", "NASDAQ", "nasdaq_historical_prices", supabase, alpha_vantage_api_key),
+                "MSFT": fetch_and_store("MSFT", "NASDAQ", "nasdaq_historical_prices", supabase, alpha_vantage_api_key),
+                "IBM": fetch_and_store("IBM", "NYSE", "nyse_historical_prices", supabase, alpha_vantage_api_key),
+                "TSCO.L": fetch_and_store("TSCO.L", "LSE", "lse_historical_prices", supabase, alpha_vantage_api_key)
+            }
             
-            # Send success response
             self.send_response(200)
             self.send_header('Content-type', 'application/json')
             self.end_headers()
-            self.wfile.write(json.dumps({
+            response_data = {
                 "status": "success",
+                "records_inserted": results,
                 "message": "Data inserted successfully!"
-            }).encode())
+            }
+            self.wfile.write(json.dumps(response_data).encode())
             
         except Exception as e:
-            # Handle errors
             self.send_response(500)
             self.send_header('Content-type', 'application/json')
             self.end_headers()
-            self.wfile.write(json.dumps({
+            response_data = {
                 "error": str(e)
-            }).encode())
+            }
+            self.wfile.write(json.dumps(response_data).encode())
 
-def handler(request, response):
-    return Handler.do_GET
+# This is the format Vercel expects
+def handler(event, context):
+    return Handler
