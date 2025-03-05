@@ -1,15 +1,11 @@
 from flask import Flask, Response
 import os
-import requests
 import json
 from supabase import create_client
+import asyncio
+import aiohttp
 
 app = Flask(__name__)
-
-def fetch_stock_data(symbol, api_key):
-    url = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&apikey={api_key}"
-    response = requests.get(url)
-    return response.json()
 
 def parse_stock_data(data, symbol):
     time_series = data.get("Time Series (Daily)", {})
@@ -32,14 +28,20 @@ def insert_stock_data(data_list, table_name, supabase):
     for data in data_list:
         supabase.table(table_name).insert(data).execute()
 
-def fetch_and_store(symbol, market, table_name, supabase, api_key):
-    raw_data = fetch_stock_data(symbol, api_key)
+async def fetch_stock_data_async(symbol, api_key):
+    url = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&apikey={api_key}"
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as response:
+            return await response.json()
+
+async def fetch_and_store_async(symbol, market, table_name, supabase, api_key):
+    raw_data = await fetch_stock_data_async(symbol, api_key)
     parsed_data = parse_stock_data(raw_data, symbol)
     insert_stock_data(parsed_data, table_name, supabase)
     return len(parsed_data)
 
 @app.route('/api/fetch_stock_data', methods=['GET'])
-def fetch_stock_data_handler():
+async def fetch_stock_data_handler():
     # Load environment variables
     supabase_url = os.environ.get("SUPABASE_URL")
     supabase_key = os.environ.get("SUPABASE_KEY")
@@ -57,18 +59,18 @@ def fetch_stock_data_handler():
         # Initialize Supabase client
         supabase = create_client(supabase_url, supabase_key)
         
-        # Fetch and store data for each stock
-        results = {
-            "AAPL": fetch_and_store("AAPL", "NASDAQ", "nasdaq_historical_prices", supabase, alpha_vantage_api_key),
-            "MSFT": fetch_and_store("MSFT", "NASDAQ", "nasdaq_historical_prices", supabase, alpha_vantage_api_key),
-            "IBM": fetch_and_store("IBM", "NYSE", "nyse_historical_prices", supabase, alpha_vantage_api_key),
-            "TSCO.L": fetch_and_store("TSCO.L", "LSE", "lse_historical_prices", supabase, alpha_vantage_api_key)
-        }
-        
+        # Fetch and store data for each stock asynchronously
+        results = await asyncio.gather(
+            fetch_and_store_async("AAPL", "NASDAQ", "nasdaq_historical_prices", supabase, alpha_vantage_api_key),
+            fetch_and_store_async("MSFT", "NASDAQ", "nasdaq_historical_prices", supabase, alpha_vantage_api_key),
+            fetch_and_store_async("IBM", "NYSE", "nyse_historical_prices", supabase, alpha_vantage_api_key),
+            fetch_and_store_async("TSCO.L", "LSE", "lse_historical_prices", supabase, alpha_vantage_api_key)
+        )
+
         return Response(
             response=json.dumps({
                 "status": "success",
-                "records_inserted": results,
+                "records_inserted": dict(zip(["AAPL", "MSFT", "IBM", "TSCO.L"], results)),
                 "message": "Data inserted successfully!"
             }),
             status=200,
