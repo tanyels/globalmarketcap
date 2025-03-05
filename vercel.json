@@ -1,7 +1,7 @@
 {
   "functions": {
     "api/fetch_stock_data.py": {
-      "runtime": "python@3.9"
+      "runtime": "python3.9"
     }
   }
 }
